@@ -277,6 +277,20 @@ def tela_base_conhecimento():
                 .strftime("%d/%m/%Y %H:%M:%S")
             )
 
+            # ========================================
+            # TRATAR CÓDIGOS INICIADOS COM "+"
+            # ========================================
+
+            df_final["Codigo"] = (
+                df_final["Codigo"]
+                .astype(str)
+                .apply(
+                    lambda x: f"'{x}"
+                    if x.startswith("+")
+                    else x
+                )
+            )
+
             atualizar_google_sheets(
                 df_final
             )
