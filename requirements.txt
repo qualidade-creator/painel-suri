@@ -1,0 +1,10 @@
+pandas
+plotly
+numpy
+openpyxl
+wordcloud
+matplotlib
+tabulate
+gspread
+oauth2client
+gspread-dataframe
