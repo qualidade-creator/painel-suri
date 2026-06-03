@@ -3,7 +3,7 @@ import streamlit as st
 from pages.vendas import tela_vendas
 from pages.auditoria5s import tela_auditoria
 from pages.base_conhecimento import tela_base_conhecimento
-
+from pages.api_produtos import tela_api_produtos
 # =========================================
 # CONFIG
 # =========================================
@@ -22,7 +22,8 @@ menu = st.sidebar.radio(
     [
         "📊 Dashboard Vendas",
         "🔎 Auditoria 5S",
-        "📚 Base de Conhecimento"
+        "📚 Base de Conhecimento",
+        "📋 API Produtos"
     ]
 )
 
@@ -38,3 +39,6 @@ elif menu == "🔎 Auditoria 5S":
 
 elif menu == "📚 Base de Conhecimento":
     tela_base_conhecimento()
+
+elif menu == "📋 API Produtos":
+    tela_api_produtos()
