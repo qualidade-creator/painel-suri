@@ -4,9 +4,7 @@ import pandas as pd
 def tela_api_produtos():
 
     url = (
-        "https://docs.google.com/spreadsheets/d/"
-        "1rz0pmsqYWy8W83bLAn_uhvIIG69rFwQBUGrXOxIdL_o"
-        "/export?format=csv&gid=0"
+        "https://docs.google.com/spreadsheets/d/e/2PACX-1vTPp5-ZfpJFYC22BlBkdcZ2xavyge91HPP0VK8JbbGfJfW6KNxNv591elxgmPoWBNBZAlmGeYZ_0sXA/pub?gid=0&single=true&output=csv"
     )
 
     df = pd.read_csv(url)
