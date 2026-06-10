@@ -3,7 +3,7 @@ import streamlit as st
 from pages.vendas import tela_vendas
 from pages.auditoria5s import tela_auditoria
 from pages.base_conhecimento import tela_base_conhecimento
-from pages.api_produtos import tela_api_produtos
+from pages.api_produtos import produtos
 # =========================================
 # CONFIG
 # =========================================
@@ -41,4 +41,4 @@ elif menu == "📚 Base de Conhecimento":
     tela_base_conhecimento()
 
 elif menu == "📋 API Produtos":
-    tela_api_produtos()
+    produtos()
