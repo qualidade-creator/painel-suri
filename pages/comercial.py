@@ -33,21 +33,25 @@ KEYWORDS_PERDA = [
 # FUNÇÕES DE API
 # =========================================
 
-def _get(path: str, params: dict = None) -> dict:
-    resp = requests.get(f"{SURI_BASE}{path}", headers=HEADERS, params=params, timeout=15)
-    resp.raise_for_status()
-    return resp.json()
-
 
 @st.cache_data(ttl=300, show_spinner=False)
-def carregar_contatos(max_contatos: int = 500) -> list[dict]:
+def carregar_contatos(max_contatos: int = 2000) -> list[dict]:
     contatos = []
     token_cont = None
     while len(contatos) < max_contatos:
-        params = {"take": min(100, max_contatos - len(contatos))}
+        take = min(100, max_contatos - len(contatos))
+        hdrs = dict(HEADERS)
         if token_cont:
-            params["continuationToken"] = token_cont
-        data = _get("/api/contacts", params)
+            # Token usa encoding customizado (PLUS=+, HASHTAG=#); passa via header
+            hdrs["x-ms-continuation"] = token_cont.replace("PLUS", "+").replace("HASHTAG", "#")
+        resp = requests.get(
+            f"{SURI_BASE}/api/contacts",
+            headers=hdrs,
+            params={"take": take},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        data = resp.json()
         items = data.get("data", {}).get("items", [])
         token_cont = data.get("data", {}).get("continuationToken")
         contatos.extend(items)
@@ -59,7 +63,14 @@ def carregar_contatos(max_contatos: int = 500) -> list[dict]:
 @st.cache_data(ttl=300, show_spinner=False)
 def carregar_mensagens(contact_id: str, take: int = 50) -> list[dict]:
     try:
-        data = _get(f"/api/contacts/{contact_id}/messages", {"take": take})
+        resp = requests.get(
+            f"{SURI_BASE}/api/contacts/{contact_id}/messages",
+            headers=HEADERS,
+            params={"take": take},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
         return data.get("data", []) if isinstance(data.get("data"), list) else []
     except Exception:
         return []
@@ -140,27 +151,14 @@ def tela_comercial():
     st.title("💬 Análise Comercial — WhatsApp")
     st.caption("Conversas do canal comercial via API Suri em tempo real")
 
-    # ── Sidebar ──────────────────────────────────────────────────────────────
-    with st.sidebar:
-        st.markdown("---")
-        st.subheader("⚙️ Configurações")
-        max_contatos = st.slider("Máx. contatos carregados", 50, 500, 200, step=50)
-        dias_filtro = st.selectbox("Período", [7, 15, 30, 60, 90, 180], index=2,
-                                   format_func=lambda x: f"Últimos {x} dias")
-        apenas_comercial = st.toggle("Apenas conversas Comerciais", value=True)
-        atualizar = st.button("🔄 Atualizar dados")
-        if atualizar:
-            st.cache_data.clear()
-
-    # ── Carregamento ─────────────────────────────────────────────────────────
+    # ── Carregamento inicial (antes do sidebar — precisamos do range de datas) ──
     with st.spinner("Carregando contatos da API Suri..."):
-        todos_contatos = carregar_contatos(max_contatos)
+        todos_contatos = carregar_contatos(2000)
 
     if not todos_contatos:
         st.error("Nenhum contato retornado pela API. Verifique o token.")
         return
 
-    # Extrai infos e descobre o range real dos dados
     todos_infos = [(c, extrair_info_contato(c)) for c in todos_contatos]
     datas_validas = [info["data_criacao"] for _, info in todos_infos if info["data_criacao"]]
 
@@ -168,26 +166,49 @@ def tela_comercial():
         st.warning("Nenhum contato com data válida.")
         return
 
-    data_max = max(datas_validas)   # data mais recente nos dados
+    data_max = max(datas_validas)
     data_min = min(datas_validas)
 
+    # ── Sidebar (agora com range real) ───────────────────────────────────────
+    with st.sidebar:
+        st.markdown("---")
+        st.subheader("⚙️ Filtros")
+
+        data_ini = st.date_input(
+            "De",
+            value=data_min.date(),
+            min_value=data_min.date(),
+            max_value=data_max.date(),
+        )
+        data_fim = st.date_input(
+            "Até",
+            value=data_max.date(),
+            min_value=data_min.date(),
+            max_value=data_max.date(),
+        )
+        apenas_comercial = st.toggle("Apenas conversas Comerciais", value=True)
+        atualizar = st.button("🔄 Atualizar dados")
+        if atualizar:
+            st.cache_data.clear()
+            st.rerun()
+
     st.caption(
-        f"Dados disponíveis: {data_min.strftime('%d/%m/%Y')} → {data_max.strftime('%d/%m/%Y')}"
+        f"Dataset: {data_min.strftime('%d/%m/%Y')} → {data_max.strftime('%d/%m/%Y')} "
+        f"· {len(todos_contatos):,} contatos carregados"
     )
 
-    # Filtro de período relativo à data mais recente dos dados (não ao "hoje")
-    corte = data_max - timedelta(days=dias_filtro)
+    # Filtro por intervalo de datas selecionado
+    from datetime import date
+    corte_ini = datetime.combine(data_ini, datetime.min.time()).replace(tzinfo=timezone.utc)
+    corte_fim = datetime.combine(data_fim, datetime.max.time()).replace(tzinfo=timezone.utc)
+
     contatos_periodo = [
         (c, info) for c, info in todos_infos
-        if info["data_criacao"] and info["data_criacao"] >= corte
+        if info["data_criacao"] and corte_ini <= info["data_criacao"] <= corte_fim
     ]
 
     if not contatos_periodo:
-        st.warning(
-            f"Nenhum contato nos últimos {dias_filtro} dias do dataset "
-            f"(referência: {data_max.strftime('%d/%m/%Y')}). "
-            "Tente aumentar o período ou o número de contatos carregados."
-        )
+        st.warning("Nenhum contato no período selecionado.")
         return
 
     # ── Carrega mensagens em paralelo ────────────────────────────────────────
