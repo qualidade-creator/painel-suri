@@ -9,3 +9,5 @@ gspread
 oauth2client
 gspread-dataframe
 FastAPI
+requests
+streamlit
