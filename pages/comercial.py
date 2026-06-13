@@ -160,16 +160,34 @@ def tela_comercial():
         st.error("Nenhum contato retornado pela API. Verifique o token.")
         return
 
-    # Filtro de período
-    corte = datetime.now(timezone.utc) - timedelta(days=dias_filtro)
-    contatos_periodo = []
-    for c in todos_contatos:
-        info = extrair_info_contato(c)
-        if info["data_criacao"] and info["data_criacao"] >= corte:
-            contatos_periodo.append((c, info))
+    # Extrai infos e descobre o range real dos dados
+    todos_infos = [(c, extrair_info_contato(c)) for c in todos_contatos]
+    datas_validas = [info["data_criacao"] for _, info in todos_infos if info["data_criacao"]]
+
+    if not datas_validas:
+        st.warning("Nenhum contato com data válida.")
+        return
+
+    data_max = max(datas_validas)   # data mais recente nos dados
+    data_min = min(datas_validas)
+
+    st.caption(
+        f"Dados disponíveis: {data_min.strftime('%d/%m/%Y')} → {data_max.strftime('%d/%m/%Y')}"
+    )
+
+    # Filtro de período relativo à data mais recente dos dados (não ao "hoje")
+    corte = data_max - timedelta(days=dias_filtro)
+    contatos_periodo = [
+        (c, info) for c, info in todos_infos
+        if info["data_criacao"] and info["data_criacao"] >= corte
+    ]
 
     if not contatos_periodo:
-        st.warning(f"Nenhum contato encontrado nos últimos {dias_filtro} dias.")
+        st.warning(
+            f"Nenhum contato nos últimos {dias_filtro} dias do dataset "
+            f"(referência: {data_max.strftime('%d/%m/%Y')}). "
+            "Tente aumentar o período ou o número de contatos carregados."
+        )
         return
 
     # ── Carrega mensagens em paralelo ────────────────────────────────────────
