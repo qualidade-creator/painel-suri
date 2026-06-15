@@ -198,7 +198,6 @@ def tela_comercial():
     )
 
     # Filtro por intervalo de datas selecionado
-    from datetime import date
     corte_ini = datetime.combine(data_ini, datetime.min.time()).replace(tzinfo=timezone.utc)
     corte_fim = datetime.combine(data_fim, datetime.max.time()).replace(tzinfo=timezone.utc)
 
@@ -265,7 +264,8 @@ def tela_comercial():
     col2.metric("✅ Atendidas", f"{int(atendidas):,}", f"{taxa_atend:.0f}%")
     col3.metric("📋 Com Orçamento", f"{int(com_orcamento):,}", f"{taxa_orc:.0f}%")
     col4.metric("⏱️ Resp. Média", f"{tempo_med:.0f} min" if pd.notna(tempo_med) else "—")
-    col5.metric("👤 Período", f"{dias_filtro} dias")
+    periodo_label = f"{data_ini.strftime('%d/%m')} – {data_fim.strftime('%d/%m/%Y')}"
+    col5.metric("📅 Período", periodo_label)
 
     st.markdown("---")
 
