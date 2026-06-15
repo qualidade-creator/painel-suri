@@ -4,7 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, date, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # =========================================
@@ -25,65 +25,45 @@ KEYWORDS_ORCAMENTO = [
 # EXTRAÇÃO DE ORÇAMENTO DO NOME DO ARQUIVO
 # =========================================
 
-# Palavras comuns em razões sociais — usadas para segmentar o nome da empresa
 _PALAVRAS_EMPRESA = re.compile(
-    r"(LTDA|EIRELI|EIRELE|EPP|ME|SA|S\.A|S/A|CONS|CONSTR|CONSTRU|MINERACAO"
-    r"|CONSTRUCAO|SERVICOS|COMERCIO|INDUSTRIA|TRANSPORTES|AGROPECUARIA"
-    r"|ENGENHARIA|SOLUCOES|TECNOLOGIA|EQUIPAMENTOS|MANUTENCAO|PECAS|DIESEL"
-    r"|CONSORCIO|GROUP|GRUPO|BRASIL|NACIONAL|INTERNACIONAL)",
+    r"(LTDA|EIRELI|EPP|ME\b|S/?A\b|CONSORCIO|CONSTRUCAO|MINERACAO|SERVICOS"
+    r"|COMERCIO|INDUSTRIA|TRANSPORTES|ENGENHARIA|SOLUCOES|TECNOLOGIA"
+    r"|EQUIPAMENTOS|MANUTENCAO|PECAS|DIESEL|GRUPO|BRASIL|NACIONAL|PESADA"
+    r"|LOGISTICA|LOCACAO|GESTAO|AMBIENTAL|AGRO|AGROPECUARIA)",
     re.IGNORECASE,
 )
 
 
 def extrair_orcamento_arquivo(filename: str) -> dict | None:
-    """
-    Extrai número do orçamento e nome do cliente a partir do nome do arquivo.
-
-    Padrões suportados:
-      452905.pdf                              -> num=452905
-      CO01744733.PDF                          -> num=CO01744733
-      393031G3CONSTRUCAOPESADALTDApdf.pdf    -> num=393031, cliente=G3 Construcao Pesada Ltda
-      447114NEWZPECASLTDAMEpdf.pdf           -> num=447114, cliente=New Pecas Ltda Me
-    """
     if not filename:
         return None
     name = filename.strip()
 
-    # Padrão 1: apenas dígitos (ex: 452905.pdf)
+    # Padrão: apenas dígitos (ex: 452905.pdf)
     m = re.match(r"^(\d+)\.pdf$", name, re.IGNORECASE)
     if m:
         return {"numero": m.group(1), "cliente": None, "arquivo": filename}
 
-    # Padrão 2: CO + dígitos (ex: CO01744733.PDF)
+    # Padrão: CO + dígitos (ex: CO01744733.PDF)
     m = re.match(r"^(CO\d+)\.pdf$", name, re.IGNORECASE)
     if m:
         return {"numero": m.group(1), "cliente": None, "arquivo": filename}
 
-    # Padrão 3: dígitos + nome_empresa + pdf.pdf
-    m = re.match(r"^(\d+)([A-ZÁÉÍÓÚÀÂÊÔÃÕÇZ][A-Za-záéíóúàâêôãõçZz0-9]+?)pdf\.pdf$",
-                 name, re.IGNORECASE)
+    # Padrão: dígitos + nome_empresa + pdf.pdf
+    m = re.match(r"^(\d+)([A-Z][A-Za-z0-9]+?)pdf\.pdf$", name, re.IGNORECASE)
     if m:
         numero = m.group(1)
-        cliente_raw = m.group(2)
-        # Formata: insere espaço antes de palavras-chave conhecidas
-        cliente = re.sub(
-            r"([A-Z])([A-Z][a-z])",
-            lambda x: x.group(1) + " " + x.group(2),
-            cliente_raw,
-        )
-        # Insere espaço antes de palavras de razão social em uppercase
-        cliente = _PALAVRAS_EMPRESA.sub(lambda x: " " + x.group(), cliente).strip()
-        # Remove espaços duplos e capitaliza
+        raw = m.group(2)
+        cliente = _PALAVRAS_EMPRESA.sub(lambda x: " " + x.group(), raw)
         cliente = re.sub(r"\s+", " ", cliente).title().strip()
         return {"numero": numero, "cliente": cliente, "arquivo": filename}
 
-    # Padrão 4: dígitos + nome sem sufixo pdf (ex: 447114NEWZPECASLTDAME.pdf)
-    m = re.match(r"^(\d+)([A-ZÁÉÍÓÚ][A-Za-záéíóúàâêôãõçZ0-9]+?)\.pdf$",
-                 name, re.IGNORECASE)
+    # Padrão: dígitos + nome (sem sufixo pdf) + .pdf
+    m = re.match(r"^(\d+)([A-Z][A-Za-z0-9]+?)\.pdf$", name, re.IGNORECASE)
     if m:
         numero = m.group(1)
-        cliente_raw = m.group(2)
-        cliente = _PALAVRAS_EMPRESA.sub(lambda x: " " + x.group(), cliente_raw).strip()
+        raw = m.group(2)
+        cliente = _PALAVRAS_EMPRESA.sub(lambda x: " " + x.group(), raw)
         cliente = re.sub(r"\s+", " ", cliente).title().strip()
         return {"numero": numero, "cliente": cliente, "arquivo": filename}
 
@@ -91,7 +71,6 @@ def extrair_orcamento_arquivo(filename: str) -> dict | None:
 
 
 def extrair_orcamentos_msgs(msgs: list[dict]) -> list[dict]:
-    """Retorna lista de orçamentos encontrados nos anexos das mensagens."""
     orcamentos = []
     for m in msgs:
         data_msg = None
@@ -101,7 +80,6 @@ def extrair_orcamentos_msgs(msgs: list[dict]) -> list[dict]:
                 data_msg = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
             except Exception:
                 pass
-
         for item in (m.get("content") or []):
             fname = item.get("filename", "")
             if fname and fname.lower().endswith(".pdf"):
@@ -111,18 +89,15 @@ def extrair_orcamentos_msgs(msgs: list[dict]) -> list[dict]:
                     info["data_msg"] = data_msg
                     info["tipo_msg"] = m.get("type", "")
                     orcamentos.append(info)
-
-        # Também verifica campo attachment direto
         att = m.get("attachment") or {}
         fname = att.get("name", "") or att.get("filename", "")
         if fname and fname.lower().endswith(".pdf"):
             info = extrair_orcamento_arquivo(fname)
-            if info and info not in orcamentos:
+            if info:
                 info["url"] = att.get("url", "")
                 info["data_msg"] = data_msg
                 info["tipo_msg"] = m.get("type", "")
                 orcamentos.append(info)
-
     return orcamentos
 
 
@@ -172,14 +147,13 @@ def carregar_mensagens(contact_id: str, take: int = 100) -> list[dict]:
 
 
 # =========================================
-# HELPERS DE ANÁLISE
+# HELPERS
 # =========================================
 
 def extrair_motivo_encerramento(msgs: list[dict]) -> str | None:
     for m in msgs:
         if m.get("type") == "SystemMessage":
-            txt = m.get("text", "")
-            match = re.search(r"Motivo do atendimento:\s*(.+)", txt, re.IGNORECASE)
+            match = re.search(r"Motivo do atendimento:\s*(.+)", m.get("text", ""), re.IGNORECASE)
             if match:
                 return match.group(1).strip()
     return None
@@ -199,14 +173,12 @@ def eh_conversa_comercial(msgs: list[dict]) -> bool:
 def tem_orcamento_texto(msgs: list[dict]) -> bool:
     for m in msgs:
         if m.get("type") in ("UserMessage", "AgentMessage"):
-            txt = m.get("text", "").lower()
-            if any(kw in txt for kw in KEYWORDS_ORCAMENTO):
+            if any(kw in m.get("text", "").lower() for kw in KEYWORDS_ORCAMENTO):
                 return True
     return False
 
 
 def data_ultima_mensagem(msgs: list[dict]) -> datetime | None:
-    """Retorna a data da mensagem mais recente."""
     datas = []
     for m in msgs:
         ts = m.get("createdAt")
@@ -221,13 +193,11 @@ def data_ultima_mensagem(msgs: list[dict]) -> datetime | None:
 def extrair_info_contato(contato: dict) -> dict:
     agent = contato.get("agent", {}) or {}
     session = contato.get("session", {}) or {}
-
     data_criacao = contato.get("dateCreate") or contato.get("lastActivity")
     try:
         dt = datetime.fromisoformat(data_criacao.replace("Z", "+00:00"))
     except Exception:
         dt = None
-
     tempo_resp = None
     if agent.get("dateRequest") and agent.get("dateAnswer"):
         try:
@@ -236,7 +206,6 @@ def extrair_info_contato(contato: dict) -> dict:
             tempo_resp = max(0, (ans - req).total_seconds() / 60)
         except Exception:
             pass
-
     return {
         "id": contato.get("id"),
         "nome": contato.get("name") or "Sem nome",
@@ -254,36 +223,58 @@ def extrair_info_contato(contato: dict) -> dict:
 
 def tela_comercial():
     st.title("💬 Análise Comercial — WhatsApp")
-    st.caption("Conversas do canal comercial via API Suri em tempo real")
 
-    # ── Carregamento dos contatos ─────────────────────────────────────────────
-    with st.spinner("Carregando contatos da API Suri..."):
+    # ── Sidebar: filtros PRIMEIRO (dinâmicos, sem depender dos dados) ─────────
+    with st.sidebar:
+        st.markdown("---")
+        st.subheader("⚙️ Filtros")
+
+        hoje = date.today()
+        data_ini = st.date_input("De", value=date(2025, 8, 1))
+        data_fim = st.date_input("Até", value=hoje)
+
+        apenas_comercial = st.toggle("Apenas conversas Comerciais", value=True)
+
+        st.markdown("---")
+        if st.button("🔄 Atualizar dados"):
+            st.cache_data.clear()
+            if "dados_comercial" in st.session_state:
+                del st.session_state["dados_comercial"]
+            st.rerun()
+
+    # ── Carregamento de contatos ──────────────────────────────────────────────
+    with st.spinner("Carregando contatos..."):
         todos_contatos = carregar_contatos(5000)
 
     if not todos_contatos:
-        st.error("Nenhum contato retornado pela API. Verifique o token.")
+        st.error("Nenhum contato retornado pela API.")
         return
 
     todos_infos = [(c, extrair_info_contato(c)) for c in todos_contatos]
 
-    # ── Análise de mensagens (com progresso) ─────────────────────────────────
+    # ── Análise de mensagens — carrega uma vez, salva em session_state ────────
     if "dados_comercial" not in st.session_state:
         total = len(todos_infos)
-        progress = st.progress(0, text=f"Carregando mensagens de {total} contatos...")
+        prog = st.progress(0, text=f"Analisando {total} conversas...")
 
         resultados = []
 
         def processar(c_info):
             contato, info = c_info
             msgs = carregar_mensagens(info["id"])
+            orcs = extrair_orcamentos_msgs(msgs)
             info["eh_comercial"] = eh_conversa_comercial(msgs)
             info["tem_orcamento"] = tem_orcamento_texto(msgs)
+            info["orcamentos_pdf"] = orcs
+            info["tem_pdf"] = len(orcs) > 0
+            # Números condensados: "44711, 39303"
+            info["numeros_orc"] = ", ".join(o["numero"] for o in orcs) if orcs else ""
+            # Clientes condensados (sem None)
+            clientes = [o["cliente"] for o in orcs if o.get("cliente")]
+            info["clientes_orc"] = ", ".join(dict.fromkeys(clientes)) if clientes else ""
             info["motivo_encerramento"] = extrair_motivo_encerramento(msgs)
-            info["orcamentos_pdf"] = extrair_orcamentos_msgs(msgs)
-            info["tem_pdf"] = len(info["orcamentos_pdf"]) > 0
             info["total_msgs_cliente"] = sum(1 for m in msgs if m.get("type") == "UserMessage")
             info["total_msgs_agente"] = sum(1 for m in msgs if m.get("type") == "AgentMessage")
-            # Data da última mensagem (pode ser mês diferente do cadastro)
             info["data_ultima_msg"] = data_ultima_mensagem(msgs)
             return info
 
@@ -297,101 +288,68 @@ def tela_comercial():
                     pass
                 done += 1
                 if done % 50 == 0:
-                    progress.progress(done / total, text=f"Mensagens {done}/{total}...")
+                    prog.progress(done / total, text=f"Mensagens {done}/{total}...")
 
-        progress.empty()
+        prog.empty()
         st.session_state["dados_comercial"] = resultados
 
-    resultados = st.session_state["dados_comercial"]
-    df_all = pd.DataFrame(resultados)
+    # ── Filtragem dinâmica (sem reprocessar mensagens) ────────────────────────
+    df_all = pd.DataFrame(st.session_state["dados_comercial"])
 
-    # Data de referência = data da última mensagem (cobre todos os meses)
-    df_all["data_ref"] = df_all["data_ultima_msg"].fillna(df_all["data_criacao"])
-    df_all["data_ref"] = pd.to_datetime(df_all["data_ref"], utc=True)
-
-    datas_validas = df_all["data_ref"].dropna()
-    if datas_validas.empty:
-        st.warning("Nenhum contato com data válida.")
-        return
-
-    data_min = datas_validas.min().date()
-    data_max = datas_validas.max().date()
-
-    # ── Sidebar ───────────────────────────────────────────────────────────────
-    with st.sidebar:
-        st.markdown("---")
-        st.subheader("⚙️ Filtros")
-
-        data_ini = st.date_input("De", value=data_min,
-                                  min_value=data_min, max_value=data_max)
-        data_fim = st.date_input("Até", value=data_max,
-                                  min_value=data_min, max_value=data_max)
-        apenas_comercial = st.toggle("Apenas conversas Comerciais", value=True)
-
-        st.markdown("---")
-        if st.button("🔄 Atualizar dados"):
-            st.cache_data.clear()
-            if "dados_comercial" in st.session_state:
-                del st.session_state["dados_comercial"]
-            st.rerun()
-
-    st.caption(
-        f"Período disponível: {data_min.strftime('%d/%m/%Y')} → {data_max.strftime('%d/%m/%Y')} "
-        f"· {len(todos_contatos):,} contatos carregados"
+    # Data de referência = última mensagem (cobre todos os meses reais)
+    df_all["data_ref"] = pd.to_datetime(
+        df_all["data_ultima_msg"].combine_first(df_all["data_criacao"]), utc=True
     )
 
-    # ── Filtro por período ────────────────────────────────────────────────────
     corte_ini = pd.Timestamp(data_ini, tz="UTC")
     corte_fim = pd.Timestamp(data_fim, tz="UTC") + pd.Timedelta(days=1)
 
-    mask_periodo = (df_all["data_ref"] >= corte_ini) & (df_all["data_ref"] < corte_fim)
-    df_periodo = df_all[mask_periodo]
-
+    mask = (df_all["data_ref"] >= corte_ini) & (df_all["data_ref"] < corte_fim)
+    df_periodo = df_all[mask]
     df = df_periodo[df_periodo["eh_comercial"]] if apenas_comercial else df_periodo
+
+    st.caption(
+        f"Período: {data_ini.strftime('%d/%m/%Y')} → {data_fim.strftime('%d/%m/%Y')} · "
+        f"{len(df):,} conversas{'comerciais' if apenas_comercial else ''} · "
+        f"{len(todos_contatos):,} contatos carregados"
+    )
 
     if df.empty:
         st.warning("Nenhuma conversa encontrada no período selecionado.")
-        if not apenas_comercial:
-            return
-        if st.checkbox("Mostrar todas as conversas (sem filtro comercial)"):
-            df = df_periodo
-        else:
-            return
+        return
 
     # ── KPIs ──────────────────────────────────────────────────────────────────
     st.markdown("---")
     total_conv = len(df)
     atendidas = int(df["atendido"].sum())
-    com_orc_texto = int(df["tem_orcamento"].sum())
     com_pdf = int(df["tem_pdf"].sum())
+    com_mencao = int(df["tem_orcamento"].sum())
     taxa_atend = (atendidas / total_conv * 100) if total_conv else 0
     tempo_med = df["tempo_resposta_min"].dropna().mean()
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("💬 Conversas", f"{total_conv:,}")
     c2.metric("✅ Atendidas", f"{atendidas:,}", f"{taxa_atend:.0f}%")
-    c3.metric("📋 Orçamentos (PDF)", f"{com_pdf:,}")
-    c4.metric("💰 Menção Preço", f"{com_orc_texto:,}")
+    c3.metric("📎 PDFs enviados", f"{com_pdf:,}")
+    c4.metric("💰 Menção preço", f"{com_mencao:,}")
     c5.metric("⏱️ Resp. Média", f"{tempo_med:.0f} min" if pd.notna(tempo_med) else "—")
 
     st.markdown("---")
 
     # ── Funil + Motivos ───────────────────────────────────────────────────────
-    col_funil, col_perda = st.columns(2)
+    col_f, col_m = st.columns(2)
 
-    with col_funil:
+    with col_f:
         st.subheader("🔽 Funil de Vendas")
-        sem_resposta = df[
+        sem_resp = df[
             df["motivo_encerramento"].str.contains(
                 "sem resposta|não respondeu|nao respondeu", case=False, na=False
             )
         ]
-        etapas = ["Iniciaram conversa", "Pediram Comercial",
-                  "Foram atendidas", "PDF de orçamento", "Sem resposta"]
-        valores = [len(df_periodo), len(df), atendidas, com_pdf, len(sem_resposta)]
-
         fig_funil = go.Figure(go.Funnel(
-            y=etapas, x=valores,
+            y=["Iniciaram conversa", "Pediram Comercial",
+               "Foram atendidas", "PDF de orçamento", "Sem resposta"],
+            x=[len(df_periodo), len(df), atendidas, com_pdf, len(sem_resp)],
             textposition="inside", textinfo="value+percent initial",
             marker_color=["#4e8df5", "#36b37e", "#00b8d9", "#ff991f", "#ff5630"],
         ))
@@ -402,18 +360,14 @@ def tela_comercial():
         )
         st.plotly_chart(fig_funil, use_container_width=True)
 
-    with col_perda:
+    with col_m:
         st.subheader("❌ Onde estou perdendo")
         df_mot = df[df["motivo_encerramento"].notna()].copy()
         if not df_mot.empty:
-            contagem = (
-                df_mot["motivo_encerramento"].str.strip()
-                .value_counts().reset_index()
-            )
-            contagem.columns = ["motivo", "qtd"]
-            contagem = contagem.head(10)
+            cnt = df_mot["motivo_encerramento"].str.strip().value_counts().reset_index()
+            cnt.columns = ["motivo", "qtd"]
             fig_mot = px.bar(
-                contagem, x="qtd", y="motivo", orientation="h",
+                cnt.head(10), x="qtd", y="motivo", orientation="h",
                 color="qtd", color_continuous_scale="Reds", text="qtd",
             )
             fig_mot.update_traces(textposition="outside")
@@ -421,57 +375,54 @@ def tela_comercial():
                 height=350, showlegend=False, coloraxis_showscale=False,
                 margin=dict(l=10, r=10, t=10, b=10),
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#e0e0e0",
-                yaxis=dict(autorange="reversed"), xaxis_title="", yaxis_title="",
+                font_color="#e0e0e0", yaxis=dict(autorange="reversed"),
+                xaxis_title="", yaxis_title="",
             )
             st.plotly_chart(fig_mot, use_container_width=True)
         else:
-            st.info("Nenhum motivo de encerramento registrado no período.")
+            st.info("Nenhum motivo de encerramento no período.")
 
     st.markdown("---")
 
     # ── Timeline + Canal ─────────────────────────────────────────────────────
-    col_time, col_canal = st.columns([2, 1])
+    col_t, col_c = st.columns([2, 1])
 
-    with col_time:
+    with col_t:
         st.subheader("📈 Conversas por dia")
-        df_time = df.copy()
-        df_time["dia"] = df_time["data_ref"].dt.date
-        agr = (
-            df_time.groupby(["dia", "tem_pdf"])
-            .size().reset_index(name="qtd")
-        )
+        df_t = df.copy()
+        df_t["dia"] = df_t["data_ref"].dt.date
+        agr = df_t.groupby(["dia", "tem_pdf"]).size().reset_index(name="qtd")
         agr["tipo"] = agr["tem_pdf"].map({True: "Com PDF orçamento", False: "Sem PDF"})
-        fig_time = px.bar(
+        fig_t = px.bar(
             agr, x="dia", y="qtd", color="tipo", barmode="stack",
             color_discrete_map={"Com PDF orçamento": "#36b37e", "Sem PDF": "#4e8df5"},
         )
-        fig_time.update_layout(
+        fig_t.update_layout(
             height=280, margin=dict(l=10, r=10, t=10, b=10),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             font_color="#e0e0e0", legend_title="", xaxis_title="", yaxis_title="Conversas",
         )
-        st.plotly_chart(fig_time, use_container_width=True)
+        st.plotly_chart(fig_t, use_container_width=True)
 
-    with col_canal:
+    with col_c:
         st.subheader("📡 Por canal")
-        canal_count = df["canal"].value_counts().reset_index()
-        canal_count.columns = ["canal", "qtd"]
-        canal_count["label"] = canal_count["canal"].str.replace("wp", "WA-")
-        fig_canal = px.pie(
-            canal_count, names="label", values="qtd", hole=0.4,
+        cc = df["canal"].value_counts().reset_index()
+        cc.columns = ["canal", "qtd"]
+        cc["label"] = cc["canal"].str.replace("wp", "WA-")
+        fig_c = px.pie(
+            cc, names="label", values="qtd", hole=0.4,
             color_discrete_sequence=px.colors.qualitative.Set2,
         )
-        fig_canal.update_layout(
+        fig_c.update_layout(
             height=280, margin=dict(l=0, r=0, t=20, b=0),
             paper_bgcolor="rgba(0,0,0,0)", font_color="#e0e0e0",
         )
-        st.plotly_chart(fig_canal, use_container_width=True)
+        st.plotly_chart(fig_c, use_container_width=True)
 
     st.markdown("---")
 
     # ── Intenção de compra ────────────────────────────────────────────────────
-    st.subheader("🔍 Intenção de compra — tópicos detectados")
+    st.subheader("🔍 Intenção de compra")
     TOPICOS = {
         "Peças / Reposição": ["peça", "peca", "peças", "pecas", "reposição", "componente"],
         "Preço / Orçamento": ["preço", "preco", "orçamento", "orcamento", "cotação", "valor"],
@@ -480,7 +431,7 @@ def tela_comercial():
         "Frete / Entrega": ["frete", "entrega", "prazo", "transportadora", "envio"],
         "Pagamento": ["pagamento", "boleto", "pix", "cartão", "parcelar"],
     }
-    contagens_top = {}
+    top_cnt = {}
     for row in df.itertuples():
         msgs = carregar_mensagens(row.id)
         texto = " ".join(
@@ -488,11 +439,11 @@ def tela_comercial():
         )
         for top, kws in TOPICOS.items():
             if any(kw in texto for kw in kws):
-                contagens_top[top] = contagens_top.get(top, 0) + 1
+                top_cnt[top] = top_cnt.get(top, 0) + 1
 
-    if contagens_top:
+    if top_cnt:
         df_top = pd.DataFrame(
-            list(contagens_top.items()), columns=["topico", "mencoes"]
+            list(top_cnt.items()), columns=["topico", "mencoes"]
         ).sort_values("mencoes", ascending=True)
         fig_top = px.bar(
             df_top, x="mencoes", y="topico", orientation="h",
@@ -509,68 +460,52 @@ def tela_comercial():
 
     st.markdown("---")
 
-    # ── Orçamentos por PDF ────────────────────────────────────────────────────
-    st.subheader("📎 Orçamentos enviados (PDF)")
-
-    linhas_orc = []
-    for row in df.itertuples():
-        for orc in (row.orcamentos_pdf or []):
-            linhas_orc.append({
-                "Número ORC": orc.get("numero", "—"),
-                "Cliente (arquivo)": orc.get("cliente") or "—",
-                "Contato": row.nome,
-                "Telefone": row.telefone or "—",
-                "Data": orc["data_msg"].strftime("%d/%m/%Y %H:%M") if orc.get("data_msg") else "—",
-                "Enviado por": "Cliente" if orc["tipo_msg"] == "UserMessage" else "Agente",
-                "Arquivo": orc.get("arquivo", ""),
-            })
-
-    if linhas_orc:
-        df_orc = pd.DataFrame(linhas_orc).sort_values("Data", ascending=False)
-        st.dataframe(df_orc, use_container_width=True, hide_index=True)
-        st.caption(f"{len(df_orc)} orçamentos em PDF encontrados no período")
-    else:
-        st.info("Nenhum orçamento em PDF encontrado no período selecionado.")
-
-    st.markdown("---")
-
-    # ── Tabela geral ─────────────────────────────────────────────────────────
+    # ── Tabela de conversas com orçamentos condensados ────────────────────────
     st.subheader("📋 Conversas do período")
-    tab_com, tab_todas = st.tabs(["📎 Com PDF", "📊 Todas"])
 
-    def fmt(frame: pd.DataFrame) -> pd.DataFrame:
+    tab_pdf, tab_todas = st.tabs(["📎 Com orçamento (PDF)", "📊 Todas"])
+
+    def montar_tabela(frame: pd.DataFrame) -> pd.DataFrame:
         fr = frame[[
-            "nome", "telefone", "data_ref", "atendido",
-            "tem_pdf", "tem_orcamento", "motivo_encerramento",
-            "total_msgs_cliente", "total_msgs_agente", "tempo_resposta_min",
+            "nome", "telefone", "data_ref",
+            "numeros_orc", "clientes_orc",
+            "atendido", "tem_orcamento",
+            "motivo_encerramento",
+            "total_msgs_cliente", "total_msgs_agente",
+            "tempo_resposta_min",
         ]].copy()
         fr.columns = [
-            "Cliente", "Telefone", "Última msg", "Atendido",
-            "PDF Orc.", "Menção Preço", "Motivo Enc.",
-            "Msgs Cliente", "Msgs Agente", "Resp (min)",
+            "Cliente", "Telefone", "Última msg",
+            "Nº Orçamento(s)", "Empresa(s) ORC",
+            "Atendido", "Menção Preço",
+            "Motivo Enc.",
+            "Msgs Cliente", "Msgs Agente",
+            "Resp (min)",
         ]
         fr["Última msg"] = pd.to_datetime(fr["Última msg"]).dt.strftime("%d/%m/%Y %H:%M")
         fr["Atendido"] = fr["Atendido"].map({True: "✅", False: "❌"})
-        fr["PDF Orc."] = fr["PDF Orc."].map({True: "✅", False: "—"})
         fr["Menção Preço"] = fr["Menção Preço"].map({True: "✅", False: "—"})
-        fr["Resp (min)"] = fr["Resp (min)"].apply(lambda x: f"{x:.0f}" if pd.notna(x) else "—")
+        fr["Resp (min)"] = fr["Resp (min)"].apply(
+            lambda x: f"{x:.0f}" if pd.notna(x) else "—"
+        )
         fr["Motivo Enc."] = fr["Motivo Enc."].fillna("—")
+        fr["Nº Orçamento(s)"] = fr["Nº Orçamento(s)"].replace("", "—")
+        fr["Empresa(s) ORC"] = fr["Empresa(s) ORC"].replace("", "—")
         return fr.sort_values("Última msg", ascending=False)
 
-    with tab_com:
+    with tab_pdf:
         df_c = df[df["tem_pdf"]]
         if df_c.empty:
-            st.info("Nenhuma conversa com PDF no período.")
+            st.info("Nenhuma conversa com PDF de orçamento no período.")
         else:
-            st.dataframe(fmt(df_c), use_container_width=True, hide_index=True)
+            st.dataframe(montar_tabela(df_c), use_container_width=True, hide_index=True)
+            st.caption(f"{len(df_c)} conversas com PDF · {df_c['numeros_orc'].str.count(',').sum() + len(df_c)} orçamentos no total")
 
     with tab_todas:
-        st.dataframe(fmt(df), use_container_width=True, hide_index=True)
+        st.dataframe(montar_tabela(df), use_container_width=True, hide_index=True)
 
-    # ── Rodapé ────────────────────────────────────────────────────────────────
     st.markdown("---")
     st.caption(
-        f"{len(todos_contatos):,} contatos carregados · "
-        f"{len(df):,} conversas comerciais no período · "
-        f"Cache: 10 min · {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+        f"{len(todos_contatos):,} contatos · {len(df):,} conversas no filtro · "
+        f"Cache 10 min · {datetime.now().strftime('%d/%m/%Y %H:%M')}"
     )
